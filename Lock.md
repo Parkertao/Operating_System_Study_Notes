@@ -138,9 +138,81 @@ void lock(lock_t* lock)
 - 使用队列：休眠代替自旋
 
 	- 必须显示地施加某种控制，决定锁释放时，谁能抢到锁
+	
 	- Solaris提供的支持
-
-		- typedef struct
+	
+		- ```c++
+		  typedef struct lock_t {
+		      int flag;
+		      int guard;
+		      queue_t *q;
+		  } lock_t;
+		  
+		  void lock_init(lock* m) {
+		      m->flag = 0;
+		      m->guard = 0;
+		      queue_init(m->q);
+		  }
+		  
+		  void lock(lock_t* m) {
+		      // 自旋，等待获取guard锁
+		      while (TestAndSet(&m->guard, 1) == 1);
+		      if (m->flag == 0) {
+		          m->flag = 1; // 获取flag锁
+		          m->guard = 0;
+		      }
+		      else {
+		          queue_add(m->q, gettid()); // 加入等待锁队列
+		          setpark(); // 准备休眠，如果此时有持有锁的线程刚好调用unlock，那么当前线程不会睡眠而是立即返回
+		          m->guard = 0;
+		      }
+		  }
+		  
+		  void unlock(lock_t* m) {
+		      while (TestAndSet(m->guard, 1) == 1);
+		      if (queue_empty(m->q))
+		          m->flag = 0; // 没有线程在等待锁，解锁
+		      else
+		          unpark(queue_remove(m->q)); // 保持锁，留给唤醒的下一个线程
+		      m->guard = 0;
+		  }
+		  ```
+		
+	- Linux提供的支持
+	
+	  - 每个futex都关联一个特定的物理内存位置，也有一个事先建好的内核队列。调用futex_wait(address, expected)时，如果address处的值等于expected，就会让调用线程睡眠，否则立即返回。调用futex_wake(address)唤醒等待队列中的一个线程。
+	
+	  - ```c++
+	    void mutex_lock(int *mutex) {
+	        int v;
+	        // 利用一个整数来是否被持有（最高位）以及等待者的个数（其余所有位）
+	        // 如果抢占到锁则立即返回
+	        if (atomic_bit_test_set(mutex, 31) == 0)
+	            return;
+	        // 否则增加mutex以指示等待者个数加一
+	        atomic_increment(mutex);
+	        while(1) {
+	            // 抢占到锁就退出
+	            if (atomic_bit_test_set(mutex, 31) == 0) {
+	                atomic_decrement(mutex);
+	                return;
+	            }
+	            // 等待mutex为负，即锁
+	            v = *mutex;
+	            if (v > 0)
+	                continue;
+	            futex_wait(mutex, v);
+	        }
+	    }
+	    
+	    void mutex_unlock(int *mutex) {
+	        // 没有线程等待，立即退出
+	        if (atomic_add_zero(mutex, 0x80000000))
+	            return;
+	        // 唤醒等待的线程
+	        futex_wake(mutex);
+	    }
+	    ```
 
 ### 两阶段锁
 
