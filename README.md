@@ -6,6 +6,8 @@
 
 [并发介绍与线程API](Concurrency_introduction&Thread_API.md)
 
+[锁](Lock.md)
+
 [常见并发问题](./Concurrency_Issues.md)
 
 
